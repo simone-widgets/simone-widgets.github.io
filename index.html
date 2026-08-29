@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: transparent;
+        color: #333;
+    }
+
+    .widget {
+        width: 100%;
+        max-width: 360px;
+        padding: 12px 14px;
+    }
+
+    .title {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 2px;
+    }
+
+    .subtitle {
+        font-size: 12px;
+        color: #777;
+        margin-bottom: 8px;
+    }
+
+    .message {
+        font-size: 13px;
+        margin-bottom: 6px;
+    }
+
+    canvas {
+        width: 100%;
+        height: 100px;
+        display: block;
+    }
+
+    .source {
+        font-size: 9px;
+        color: #999;
+        text-align: right;
+        margin-top: 3px;
+    }
+</style>
+</head>
+
+<body>
+
+<div class="widget">
+
+    <div class="title">🌧️ Rain in Leiden</div>
+    <div class="subtitle">Next 2 hours</div>
+
+    <div class="message" id="message">
+        Loading...
+    </div>
+
+    <canvas id="chart"></canvas>
+
+    <div class="source">
+        Data: Buienradar.nl
+    </div>
+
+</div>
+
+<script>
+
+const DATA_URL =
+    "https://gadgets.buienradar.nl/data/raintext/?lat=52.16&lon=4.53";
+
+
+// Buienradar:
+// intensity = 10 ^ ((value - 109) / 32)
+
+function toMmPerHour(value) {
+
+    if (value === 0) {
+        return 0;
+    }
+
+    return Math.pow(10, (value - 109) / 32);
+}
+
+
+async function getRainData() {
+
+    const response = await fetch(DATA_URL);
+
+    const text = await response.text();
+
+    return text
+        .trim()
+        .split("\n")
+        .map(line => {
+
+            const [value, time] = line.trim().split("|");
+
+            return {
+                value: Number(value),
+                time: time,
+                rain: toMmPerHour(Number(value))
+            };
+
+        });
+}
+
+
+function drawChart(data) {
+
+    const canvas = document.getElementById("chart");
+
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+
+    const ctx = canvas.getContext("2d");
+
+    ctx.scale(dpr, dpr);
+
+    const paddingLeft = 4;
+    const paddingRight = 4;
+    const paddingTop = 8;
+    const paddingBottom = 20;
+
+    const graphWidth =
+        width - paddingLeft - paddingRight;
+
+    const graphHeight =
+        height - paddingTop - paddingBottom;
+
+
+    const maxRain =
+        Math.max(...data.map(x => x.rain));
+
+    const maxY =
+        Math.max(1, maxRain);
+
+
+    // Draw filled graph
+
+    ctx.beginPath();
+
+    data.forEach((point, i) => {
+
+        const x =
+            paddingLeft +
+            (i / (data.length - 1)) * graphWidth;
+
+        const y =
+            paddingTop +
+            graphHeight -
+            (point.rain / maxY) * graphHeight;
+
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    });
+
+
+    // Bottom of graph
+
+    ctx.lineTo(
+        paddingLeft + graphWidth,
+        paddingTop + graphHeight
+    );
+
+    ctx.lineTo(
+        paddingLeft,
+        paddingTop + graphHeight
+    );
+
+    ctx.closePath();
+
+    ctx.fillStyle = "rgba(80, 150, 220, 0.20)";
+    ctx.fill();
+
+
+    // Line
+
+    ctx.beginPath();
+
+    data.forEach((point, i) => {
+
+        const x =
+            paddingLeft +
+            (i / (data.length - 1)) * graphWidth;
+
+        const y =
+            paddingTop +
+            graphHeight -
+            (point.rain / maxY) * graphHeight;
+
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+
+    });
+
+    ctx.strokeStyle = "rgb(60, 130, 210)";
+    ctx.lineWidth = 2;
+
+    ctx.stroke();
+
+
+    // Time labels
+
+    ctx.fillStyle = "#888";
+    ctx.font = "10px sans-serif";
+
+    const labelIndices = [
+        0,
+        Math.floor(data.length / 2),
+        data.length - 1
+    ];
+
+    labelIndices.forEach((index, i) => {
+
+        const point = data[index];
+
+        const x =
+            paddingLeft +
+            (index / (data.length - 1)) * graphWidth;
+
+        ctx.textAlign =
+            i === 0 ? "left" :
+            i === 2 ? "right" :
+            "center";
+
+        ctx.fillText(
+            point.time,
+            x,
+            height - 4
+        );
+
+    });
+
+}
+
+
+function updateMessage(data) {
+
+    const message =
+        document.getElementById("message");
+
+
+    const now = data[0];
+
+    const nextRain =
+        data.find(point => point.rain >= 0.1);
+
+
+    if (!nextRain) {
+
+        message.textContent =
+            "🌤️ No significant rain expected";
+
+        return;
+    }
+
+
+    if (nextRain === now) {
+
+        message.textContent =
+            "🌧️ Rain now";
+
+        return;
+    }
+
+
+    const index =
+        data.indexOf(nextRain);
+
+
+    const minutes =
+        index * 5;
+
+
+    message.textContent =
+        `🌧️ Rain expected in about ${minutes} min`;
+
+}
+
+
+async function update() {
+
+    try {
+
+        const data =
+            await getRainData();
+
+        drawChart(data);
+
+        updateMessage(data);
+
+    }
+
+    catch (error) {
+
+        document.getElementById("message")
+            .textContent =
+            "Unable to load rain data.";
+
+        console.error(error);
+
+    }
+
+}
+
+
+// Initial load
+update();
+
+
+// Buienradar updates every 5 minutes
+setInterval(update, 5 * 60 * 1000);
+
+</script>
+
+</body>
+</html>
