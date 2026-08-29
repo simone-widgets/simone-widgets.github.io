@@ -465,8 +465,50 @@ function drawChart() {
         return;
     }
 
+
     /*
-     * Space for the scale on both sides.
+     * Find the actual maximum rainfall.
+     */
+    const actualMax = Math.max(
+        0,
+        ...rainData.map(d => d.mm)
+    );
+
+
+    /*
+     * Choose a sensible upper limit based on
+     * the actual maximum.
+     *
+     * This keeps small amounts of rain visible
+     * instead of always scaling the graph to 10 mm/h.
+     */
+    let maxRain;
+
+    if (actualMax <= 0.1) {
+        maxRain = 0.2;
+    } else if (actualMax <= 0.2) {
+        maxRain = 0.5;
+    } else if (actualMax <= 0.5) {
+        maxRain = 1;
+    } else if (actualMax <= 1) {
+        maxRain = 2;
+    } else if (actualMax <= 2) {
+        maxRain = 5;
+    } else if (actualMax <= 5) {
+        maxRain = 10;
+    } else if (actualMax <= 10) {
+        maxRain = 20;
+    } else if (actualMax <= 20) {
+        maxRain = 50;
+    } else if (actualMax <= 50) {
+        maxRain = 100;
+    } else {
+        maxRain = Math.ceil(actualMax);
+    }
+
+
+    /*
+     * Space for scale on both sides.
      */
     const scaleWidth = 30;
 
@@ -483,17 +525,8 @@ function drawChart() {
 
 
     /*
-     * Logarithmic scale.
-     *
-     * Minimum graph range is 10 mm/h so that
-     * the scale stays consistent.
+     * Logarithmic scaling.
      */
-    const maxRain = Math.max(
-        10,
-        ...rainData.map(d => d.mm)
-    );
-
-
     function yForRain(mm) {
 
         if (mm <= 0) {
@@ -512,14 +545,27 @@ function drawChart() {
     /*
      * Scale values.
      */
-    const scaleValues = [
-        10,
-        5,
-        1,
-        0.5,
+    const possibleScaleValues = [
+        0,
         0.1,
-        0
+        0.5,
+        1,
+        2,
+        5,
+        10,
+        20,
+        50,
+        100
     ];
+
+
+    /*
+     * Only show scale values that fit within
+     * the current graph range.
+     */
+    const scaleValues = possibleScaleValues.filter(
+        value => value <= maxRain
+    );
 
 
     /*
@@ -527,13 +573,7 @@ function drawChart() {
      */
     for (const value of scaleValues) {
 
-        let y;
-
-        if (value === 0) {
-            y = paddingTop + chartHeight;
-        } else {
-            y = yForRain(value);
-        }
+        const y = yForRain(value);
 
         ctx.beginPath();
 
@@ -567,21 +607,12 @@ function drawChart() {
 
     for (const value of scaleValues) {
 
-        let y;
-
-        if (value === 0) {
-            y = paddingTop + chartHeight;
-        } else {
-            y = yForRain(value);
-        }
-
+        const y = yForRain(value);
 
         let label;
 
         if (value === 0) {
             label = "0";
-        } else if (value < 1) {
-            label = value.toString();
         } else {
             label = String(value);
         }
@@ -613,7 +644,7 @@ function drawChart() {
 
 
     /*
-     * Draw graph points.
+     * Create graph points.
      */
     const points = rainData.map((d, i) => {
 
