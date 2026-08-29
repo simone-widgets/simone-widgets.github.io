@@ -113,7 +113,8 @@
     <div class="times" id="times"></div>
 
     <div class="footer">
-        Data: Buienradar.nl
+        <span>Data: Buienradar.nl</span>
+        <span id="updated"></span>
     </div>
 
 </div>
@@ -126,20 +127,19 @@ const LON = 4.53;
 const DATA_URL =
     `https://gadgets.buienradar.nl/data/raintext/?lat=${LAT}&lon=${LON}`;
 
+const REFRESH_INTERVAL = 5 * 60 * 1000;
+const RETRY_INTERVAL = 60 * 1000;
+
 const canvas = document.getElementById("rainChart");
 const ctx = canvas.getContext("2d");
 
 let rainData = [];
 
 
-/*
- * Buienradar's raw value can be converted to
- * rainfall intensity using:
- *
- * mm/h = 10^((value - 109) / 32)
- *
- * Values below 77 are treated as essentially dry.
- */
+/* ---------------------------------------------------------
+   Convert Buienradar value to rainfall intensity
+--------------------------------------------------------- */
+
 function valueToMm(value) {
 
     if (value < 77) {
@@ -150,17 +150,120 @@ function valueToMm(value) {
 }
 
 
-/*
- * Fetch the Buienradar data.
- */
+/* ---------------------------------------------------------
+   Format rainfall
+--------------------------------------------------------- */
+
+function formatRain(mm) {
+
+    if (mm < 0.05) {
+        return "0";
+    }
+
+    if (mm < 10) {
+        return mm.toFixed(1);
+    }
+
+    return Math.round(mm).toString();
+}
+
+
+/* ---------------------------------------------------------
+   Convert HH:MM to minutes
+--------------------------------------------------------- */
+
+function timeToMinutes(time) {
+
+    const parts = time.split(":");
+
+    return parseInt(parts[0], 10) * 60 +
+           parseInt(parts[1], 10);
+}
+
+
+/* ---------------------------------------------------------
+   Find the next rain event using actual current time
+--------------------------------------------------------- */
+
+function findNextRain() {
+
+    if (rainData.length === 0) {
+        return null;
+    }
+
+    const now = new Date();
+
+    const currentMinutes =
+        now.getHours() * 60 +
+        now.getMinutes();
+
+    for (let i = 0; i < rainData.length; i++) {
+
+        const rainMinutes =
+            timeToMinutes(rainData[i].time);
+
+        /*
+         * Allow for the data crossing midnight.
+         */
+        let difference =
+            rainMinutes - currentMinutes;
+
+        if (difference < -720) {
+            difference += 1440;
+        }
+
+        /*
+         * 0.1 mm/h is our threshold for
+         * meaningful rain.
+         */
+        if (
+            rainData[i].mm >= 0.1 &&
+            difference >= -5
+        ) {
+            return {
+                index: i,
+                data: rainData[i],
+                minutes: Math.max(0, difference)
+            };
+        }
+    }
+
+    return null;
+}
+
+
+/* ---------------------------------------------------------
+   Fetch fresh Buienradar data
+--------------------------------------------------------- */
+
 async function loadRainData() {
 
     try {
 
-        const response = await fetch(DATA_URL + "&_=" + Date.now());
+        /*
+         * Add a unique timestamp so the browser,
+         * Notion and intermediate caches cannot
+         * simply reuse the previous response.
+         */
+        const cacheBuster = Date.now();
+
+        const url =
+            DATA_URL +
+            "&_=" +
+            cacheBuster;
+
+        const response = await fetch(
+            url,
+            {
+                cache: "no-store"
+            }
+        );
 
         if (!response.ok) {
-            throw new Error("Could not load rain data.");
+            throw new Error(
+                "Buienradar returned HTTP " +
+                response.status
+            );
         }
 
         const text = await response.text();
@@ -180,8 +283,11 @@ async function loadRainData() {
                 continue;
             }
 
-            const raw = parseInt(parts[0], 10);
-            const time = parts[1].trim();
+            const raw =
+                parseInt(parts[0], 10);
+
+            const time =
+                parts[1].trim();
 
             if (Number.isNaN(raw)) {
                 continue;
@@ -195,220 +301,240 @@ async function loadRainData() {
         }
 
         if (data.length === 0) {
-            throw new Error("No rain data available.");
+            throw new Error(
+                "No rain data available."
+            );
         }
 
+        /*
+         * Only replace the existing data after
+         * we successfully received valid data.
+         */
         rainData = data;
 
         updateWidget();
 
+        updateTimestamp();
+
+        console.log(
+            "Rain data updated:",
+            new Date().toLocaleTimeString()
+        );
+
     } catch (error) {
 
-        console.error(error);
+        console.error(
+            "Rain data refresh failed:",
+            error
+        );
 
-        document.getElementById("statusText").innerHTML =
-            '<span class="error">Unable to load rain data</span>';
+        /*
+         * Keep displaying the previous graph.
+         * Don't replace it with an error message.
+         */
 
-        document.getElementById("statusIcon").textContent = "⚠️";
+        document.getElementById(
+            "updated"
+        ).textContent = " · update failed";
+
+        /*
+         * Try again in one minute.
+         */
+        setTimeout(
+            loadRainData,
+            RETRY_INTERVAL
+        );
     }
 }
 
 
-/*
- * Format rainfall nicely.
- */
-function formatRain(mm) {
+/* ---------------------------------------------------------
+   Show last update time
+--------------------------------------------------------- */
 
-    if (mm < 0.05) {
-        return "0";
-    }
+function updateTimestamp() {
 
-    if (mm < 1) {
-        return mm.toFixed(1);
-    }
+    const now = new Date();
 
-    if (mm < 10) {
-        return mm.toFixed(1);
-    }
+    const time =
+        now.toLocaleTimeString(
+            [],
+            {
+                hour: "2-digit",
+                minute: "2-digit"
+            }
+        );
 
-    return Math.round(mm).toString();
+    document.getElementById(
+        "updated"
+    ).textContent =
+        " · Updated " + time;
 }
 
 
-/*
- * Find the first meaningful rain event.
- */
-function findNextRain() {
+/* ---------------------------------------------------------
+   Update status text
+--------------------------------------------------------- */
 
-    for (let i = 0; i < rainData.length; i++) {
-
-        if (rainData[i].mm >= 0.1) {
-            return {
-                index: i,
-                data: rainData[i]
-            };
-        }
-    }
-
-    return null;
-}
-
-
-/*
- * Convert HH:MM to minutes.
- */
-function timeToMinutes(time) {
-
-    const parts = time.split(":");
-
-    return parseInt(parts[0], 10) * 60 +
-           parseInt(parts[1], 10);
-}
-
-
-/*
- * Calculate minutes between two HH:MM times.
- *
- * Handles crossing midnight.
- */
-function minutesBetween(start, end) {
-
-    let a = timeToMinutes(start);
-    let b = timeToMinutes(end);
-
-    if (b < a) {
-        b += 24 * 60;
-    }
-
-    return b - a;
-}
-
-
-/*
- * Update the status text.
- */
 function updateStatus() {
 
-    const statusIcon = document.getElementById("statusIcon");
-    const statusText = document.getElementById("statusText");
+    const statusIcon =
+        document.getElementById("statusIcon");
 
-    const nextRain = findNextRain();
+    const statusText =
+        document.getElementById("statusText");
+
+    const nextRain =
+        findNextRain();
 
     if (!nextRain) {
 
         statusIcon.textContent = "☀️";
-        statusText.textContent = "No rain expected";
+        statusText.textContent =
+            "No rain expected";
 
         return;
     }
 
-    const firstTime = rainData[0].time;
+    const minutes =
+        nextRain.minutes;
 
-    const minutes = minutesBetween(
-        firstTime,
-        nextRain.data.time
-    );
+    statusIcon.textContent = "🌧️";
 
     if (minutes <= 0) {
-
-        statusIcon.textContent = "🌧️";
 
         statusText.textContent =
             `Rain now · ${formatRain(nextRain.data.mm)} mm/h`;
 
+        return;
+    }
+
+    let timeText;
+
+    if (minutes < 60) {
+
+        timeText =
+            `in ${minutes} min`;
+
     } else {
 
-        statusIcon.textContent = "🌧️";
+        const hours =
+            Math.floor(minutes / 60);
 
-        let timeText;
+        const mins =
+            minutes % 60;
 
-        if (minutes < 60) {
-            timeText = `in ${minutes} min`;
+        if (mins === 0) {
+
+            timeText =
+                `in ${hours} hr`;
+
         } else {
 
-            const hours = Math.floor(minutes / 60);
-            const mins = minutes % 60;
-
-            if (mins === 0) {
-                timeText = `in ${hours} hr`;
-            } else {
-                timeText = `in ${hours} hr ${mins} min`;
-            }
+            timeText =
+                `in ${hours} hr ${mins} min`;
         }
-
-        statusText.textContent =
-            `Rain ${timeText} · ${formatRain(nextRain.data.mm)} mm/h`;
     }
+
+    statusText.textContent =
+        `Rain ${timeText} · ${formatRain(nextRain.data.mm)} mm/h`;
 }
 
 
-/*
- * Draw the graph.
- */
+/* ---------------------------------------------------------
+   Draw chart
+--------------------------------------------------------- */
+
 function drawChart() {
 
-    const rect = canvas.getBoundingClientRect();
+    const rect =
+        canvas.getBoundingClientRect();
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr =
+        window.devicePixelRatio || 1;
 
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    canvas.width =
+        rect.width * dpr;
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas.height =
+        rect.height * dpr;
+
+    ctx.setTransform(
+        dpr,
+        0,
+        0,
+        dpr,
+        0,
+        0
+    );
 
     const width = rect.width;
     const height = rect.height;
 
-    ctx.clearRect(0, 0, width, height);
+    ctx.clearRect(
+        0,
+        0,
+        width,
+        height
+    );
 
     if (rainData.length < 2) {
         return;
     }
 
-
-    /*
-     * Chart padding.
-     */
     const paddingLeft = 4;
     const paddingRight = 4;
     const paddingTop = 8;
     const paddingBottom = 8;
 
     const chartWidth =
-        width - paddingLeft - paddingRight;
+        width -
+        paddingLeft -
+        paddingRight;
 
     const chartHeight =
-        height - paddingTop - paddingBottom;
+        height -
+        paddingTop -
+        paddingBottom;
 
 
     /*
-     * Use logarithmic scaling.
-
-     * This makes both light and heavy rain visible
-     * without huge peaks destroying the graph.
+     * Logarithmic scale makes light rain
+     * and heavy rain visible together.
      */
-    const maxRain = Math.max(
-        1,
-        ...rainData.map(d => d.mm)
-    );
+    const maxRain =
+        Math.max(
+            1,
+            ...rainData.map(d => d.mm)
+        );
 
     function yForRain(mm) {
 
         if (mm <= 0) {
-            return paddingTop + chartHeight;
+
+            return (
+                paddingTop +
+                chartHeight
+            );
         }
 
-        const maxLog = Math.log10(maxRain + 1);
-        const valueLog = Math.log10(mm + 1);
+        const maxLog =
+            Math.log10(maxRain + 1);
 
-        return paddingTop +
+        const valueLog =
+            Math.log10(mm + 1);
+
+        return (
+            paddingTop +
             chartHeight -
-            (valueLog / maxLog) * chartHeight;
+            (valueLog / maxLog) *
+            chartHeight
+        );
     }
 
 
     /*
-     * Draw a subtle baseline.
+     * Baseline
      */
     ctx.beginPath();
 
@@ -429,30 +555,42 @@ function drawChart() {
 
 
     /*
-     * Create points.
+     * Chart points
      */
-    const points = rainData.map((d, i) => {
+    const points =
+        rainData.map((d, i) => {
 
-        const x =
-            paddingLeft +
-            (i / (rainData.length - 1)) * chartWidth;
+            const x =
+                paddingLeft +
+                (i / (rainData.length - 1)) *
+                chartWidth;
 
-        const y = yForRain(d.mm);
+            const y =
+                yForRain(d.mm);
 
-        return { x, y };
-    });
+            return {
+                x: x,
+                y: y
+            };
+        });
 
 
     /*
-     * Draw filled area.
+     * Filled area
      */
     ctx.beginPath();
 
-    ctx.moveTo(points[0].x,
-               paddingTop + chartHeight);
+    ctx.moveTo(
+        points[0].x,
+        paddingTop + chartHeight
+    );
 
     for (const p of points) {
-        ctx.lineTo(p.x, p.y);
+
+        ctx.lineTo(
+            p.x,
+            p.y
+        );
     }
 
     ctx.lineTo(
@@ -462,16 +600,21 @@ function drawChart() {
 
     ctx.closePath();
 
-    ctx.fillStyle = "rgba(75, 140, 200, 0.15)";
+    ctx.fillStyle =
+        "rgba(75, 140, 200, 0.15)";
+
     ctx.fill();
 
 
     /*
-     * Draw line.
+     * Line
      */
     ctx.beginPath();
 
-    ctx.moveTo(points[0].x, points[0].y);
+    ctx.moveTo(
+        points[0].x,
+        points[0].y
+    );
 
     for (let i = 1; i < points.length; i++) {
 
@@ -490,43 +633,55 @@ function drawChart() {
 
 
     /*
-     * Mark the first rain event.
+     * Mark next rain event
      */
-    const nextRain = findNextRain();
+    const nextRain =
+        findNextRain();
 
     if (nextRain) {
 
-        const p = points[nextRain.index];
+        const p =
+            points[nextRain.index];
 
-        ctx.beginPath();
+        if (p) {
 
-        ctx.arc(
-            p.x,
-            p.y,
-            3,
-            0,
-            Math.PI * 2
-        );
+            ctx.beginPath();
 
-        ctx.fillStyle = "#4b8cc8";
-        ctx.fill();
+            ctx.arc(
+                p.x,
+                p.y,
+                3,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fillStyle =
+                "#4b8cc8";
+
+            ctx.fill();
+        }
     }
 }
 
 
-/*
- * Show time labels.
- */
+/* ---------------------------------------------------------
+   Time labels
+--------------------------------------------------------- */
+
 function updateTimes() {
 
-    const element = document.getElementById("times");
+    const element =
+        document.getElementById("times");
 
     if (rainData.length === 0) {
+
         element.innerHTML = "";
+
         return;
     }
 
-    const count = rainData.length;
+    const count =
+        rainData.length;
 
     const indices = [
         0,
@@ -534,18 +689,24 @@ function updateTimes() {
         count - 1
     ];
 
-    element.innerHTML = indices
-        .filter((value, index, array) =>
-            array.indexOf(value) === index
-        )
-        .map(i => `<span>${rainData[i].time}</span>`)
-        .join("");
+    element.innerHTML =
+        indices
+            .filter(
+                (value, index, array) =>
+                    array.indexOf(value) === index
+            )
+            .map(
+                i =>
+                    `<span>${rainData[i].time}</span>`
+            )
+            .join("");
 }
 
 
-/*
- * Update everything.
- */
+/* ---------------------------------------------------------
+   Update everything
+--------------------------------------------------------- */
+
 function updateWidget() {
 
     updateStatus();
@@ -554,29 +715,52 @@ function updateWidget() {
 }
 
 
-/*
- * Load immediately.
- */
+/* ---------------------------------------------------------
+   Initial load
+--------------------------------------------------------- */
+
 loadRainData();
 
 
-/*
- * Refresh every 5 minutes.
+/* ---------------------------------------------------------
+   Refresh every 5 minutes
+--------------------------------------------------------- */
 
- * Buienradar updates its data every 5 minutes.
- */
 setInterval(
     loadRainData,
-    5 * 60 * 1000
+    REFRESH_INTERVAL
 );
 
 
-/*
- * Redraw if the Notion embed changes size.
- */
+/* ---------------------------------------------------------
+   Redraw when Notion/browser changes size
+--------------------------------------------------------- */
+
 window.addEventListener(
     "resize",
     drawChart
+);
+
+
+/* ---------------------------------------------------------
+   Recalculate status every minute.
+
+   This is useful because the actual clock keeps
+   moving even though the Buienradar data only
+   needs to be downloaded every 5 minutes.
+--------------------------------------------------------- */
+
+setInterval(
+    () => {
+
+        if (rainData.length > 0) {
+
+            updateStatus();
+            drawChart();
+        }
+
+    },
+    60 * 1000
 );
 
 </script>
